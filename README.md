@@ -93,6 +93,19 @@ Or launch it explicitly:
 
 ## How It Works
 
+### Coordinate Grid Screenshots
+
+Most simulator tools give Claude a raw screenshot and hope it can guess where to tap. That works for obvious buttons, but falls apart for toolbar items, tab bars, or anything the accessibility tree can't see.
+
+Our approach: **overlay a coordinate grid directly on the screenshot.** Claude reads the exact point coordinates off the image — no guessing, no pixel-to-point math, no "tap roughly in the middle of the screen."
+
+The grid has three tiers of visual density:
+- Faint lines every **25pt** — fine-grained positioning
+- Medium lines with labels every **50pt** — quick coordinate reading
+- Bold lines with labels every **100pt** — major landmarks
+
+The screenshot is auto-resized to fit within Claude's image limits (max 1800px height) while preserving the coordinate mapping. This means Claude can locate and tap *any* visible element — even ones completely invisible to the accessibility tree.
+
 ### Interaction Methods
 
 | Action | Method | Tool |
@@ -105,15 +118,19 @@ Or launch it explicitly:
 
 ### Finding UI Elements
 
-1. **`idb ui describe-all`** — returns all elements with `AXLabel`, frames in device points
-2. **`idb ui describe-point X Y`** — probes a specific coordinate; finds toolbar/tab bar items that `describe-all` misses (Group children bug, idb #767)
-3. **Grid screenshot** — visual fallback with coordinate overlay for manual coordinate reading
+Claude uses a three-tier strategy to locate elements:
+
+1. **`idb ui describe-all`** — returns all elements with `AXLabel` and frames in device points. Fast, structured, preferred when it works.
+2. **`idb ui describe-point X Y`** — probes a specific coordinate. Finds toolbar buttons, tab bar items, and segmented picker segments that `describe-all` misses due to the Group children bug ([idb #767](https://github.com/facebook/idb/issues/767)).
+3. **Grid screenshot** — the visual fallback. Claude reads coordinates directly from the overlay and taps with precision. This is what makes the toolkit reliable even when the accessibility tree has gaps.
 
 ### The `describe-all` Group Children Bug
 
-`idb ui describe-all` does NOT return children of Group elements. This means toolbar buttons, tab bar items, and segmented picker segments are invisible. Use `describe-point` to probe their expected positions, or take a grid screenshot.
+`idb ui describe-all` does NOT return children of Group elements. This means toolbar buttons, tab bar items, and segmented picker segments are invisible to the most common discovery method. Other tools work around this by having the AI guess coordinates from raw screenshots — which is fragile and error-prone.
 
-The `iphone-sim-setup` skill addresses this by adding `.accessibilityLabel()` and `.accessibilityIdentifier()` modifiers to SwiftUI views, making elements findable for both idb and XCUITest.
+We solve this two ways:
+1. **Grid screenshots** give Claude exact coordinates for anything visible on screen, regardless of accessibility tree coverage
+2. **`iphone-sim-setup` skill** scans SwiftUI code and adds `.accessibilityLabel()` / `.accessibilityIdentifier()` modifiers, making elements permanently discoverable
 
 ## Capabilities
 
