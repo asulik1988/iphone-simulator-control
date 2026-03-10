@@ -2,237 +2,227 @@
 name: iphone-sim
 description: "Interact with the iPhone Simulator — navigate via accessibility tree, tap UI elements, type text, swipe, and control device settings. Use when asked to test, interact with, or verify anything in the iOS Simulator."
 argument-hint: "[screenshot | tap <description> | type <text> | swipe <direction> | home | launch <bundle-id> | terminate <bundle-id> | dark | light | status-bar]"
-allowed-tools: Bash, Read
+user-invokable: true
 ---
 
 # iPhone Simulator Control
 
-You are controlling an iOS Simulator running on macOS. Use `xcrun simctl`, `idb`, `cliclick`, and `osascript` to interact with it.
+You are controlling an iOS Simulator running on macOS. Use the **sim_helper.py** script, `xcrun simctl`, `idb`, and `osascript` to interact with it.
 
 **The user's request:** $ARGUMENTS
 
 ## Core Workflow
 
-**Prefer the accessibility tree over screenshots for navigation.** The accessibility tree gives you element types, labels, and frames — structured data that's cheaper and more reliable than image analysis.
+1. **Focus** the simulator: `osascript -e 'tell application "Simulator" to activate'`
+2. **Describe** the screen: `idb ui describe-all` to get element types, labels, and frames
+3. **Act** — use `sim_helper.py` for tapping, typing, swiping (see below)
+4. **Verify** — take a grid screenshot or describe again for visual confirmation
+5. **Report** what happened
 
-1. **Check tools**: Run `which idb` to determine if idb is available
-2. **Focus** the simulator: `osascript -e 'tell application "Simulator" to activate'`
-3. **Describe** the screen: `idb ui describe-all` (if idb available)
-4. **Act** — tap by coordinates from the accessibility tree, type text, swipe, etc.
-5. **Verify** — describe again or take a screenshot for visual confirmation
-6. **Report** what happened
+## sim_helper.py — Primary Interaction Tool
 
-**Fallback (no idb):** Screenshot → Read → identify positions visually → act using cliclick (see "Screenshot Navigation" section below).
+**Path:** `/Users/adamsulik/Documents/git/simulator-control/.claude/skills/iphone-sim/sim_helper.py`
 
-## Prerequisites
+This script uses `idb ui tap` for taps, AppleScript `keystroke` for typing, CGEvent mouse drag for swiping, and CGEvent mouseDown/hold for long presses.
 
-- `idb` recommended (`brew tap facebook/fb && brew install idb-companion && pip3 install fb-idb`)
-- `cliclick` as fallback for coordinate-based interaction (`brew install cliclick`)
-- Simulator must be running with a booted device
-- Check with: `xcrun simctl list devices booted`
+**All coordinates are in device POINTS, NOT pixels.**
 
-## Accessibility Tree Navigation (Preferred)
-
-When `idb` is available, use the accessibility tree to find and interact with elements semantically — no screenshots needed.
-
-**Note:** `--udid UDID` is a global flag on `idb`, not on subcommands. Use `idb --udid booted <command>` or omit it if only one simulator is booted.
-
-### Describe the Screen
+**Auto-detection:** The script auto-detects the booted simulator device and its point dimensions. No manual configuration needed. Run `python3 $SH info` to see detected device.
 
 ```bash
-# Full accessibility tree — JSON list of all elements with types, labels, bounds
-idb ui describe-all
-idb --udid UDID ui describe-all          # specific device
+SH=/Users/adamsulik/Documents/git/simulator-control/.claude/skills/iphone-sim/sim_helper.py
 
-# Describe element at a specific point (simulator coordinates)
-idb ui describe-point X Y
+python3 $SH tap 196 445            # Tap at device point (x, y)
+python3 $SH long_press 200 490     # Long press (for context menus, 2s default)
+python3 $SH long_press 200 490 3.0 # Long press with custom duration
+python3 $SH swipe_back             # iOS swipe-back gesture (left edge → right)
+python3 $SH swipe_up               # Scroll down (swipe content up)
+python3 $SH swipe_down             # Scroll up (swipe content down)
+python3 $SH type "hello world"     # Type into focused field
+python3 $SH screenshot             # Screenshot with coordinate grid overlay
+python3 $SH screenshot /tmp/s.png  # Screenshot to custom path
+python3 $SH info                   # Show booted device name and dimensions
 ```
 
-The output includes element **type** (Button, TextField, StaticText, etc.), **label**, **frame** (x, y, width, height in simulator points), and **enabled/focused** state.
+**Dependencies:** Requires `pyobjc-framework-Quartz`, `Pillow`, and `idb`. Install with:
+```bash
+pip3 install --break-system-packages pyobjc-framework-Quartz Pillow
+brew install idb-companion && pip3 install --break-system-packages fb-idb
+```
 
-### Find Elements
+## What Works vs What Doesn't
 
-Parse the `describe-all` output to locate elements:
-- **By label text**: Look for the element whose label matches your target (e.g., "Login", "Submit")
-- **By type**: Filter for `Button`, `TextField`, `SecureTextField`, `Switch`, etc.
-- **By frame**: The frame gives you the tap coordinates in simulator points
+| Method | Tapping | Long Press | Typing | Swiping |
+|--------|---------|------------|--------|---------|
+| **sim_helper.py** | **YES** (idb) | **YES** (idb) | **YES** (AppleScript) | **YES** (CGEvent) |
+| idb ui tap | **YES** | **YES** (--duration) | NO | NO |
+| cliclick | NO (unreliable) | NO | Partial | NO |
 
-### Tap
+- **`idb ui tap`** works reliably for all elements including toolbar items. It's the primary tap method.
+- **Long press** uses `idb ui tap --duration` — reliable, doesn't require Simulator to be frontmost.
+- **Typing** uses AppleScript `keystroke` — requires Hardware Keyboard connected.
+- **Swiping** uses CGEvent mouse drag — reliable for scroll and swipe-back gestures.
+
+## Screenshots with Coordinate Grid
+
+The `screenshot` command captures the screen and overlays a coordinate grid in device points:
 
 ```bash
-# Tap at simulator-point coordinates (from the element's frame center)
-# Calculate center: center_x = frame_x + frame_width/2, center_y = frame_y + frame_height/2
-idb ui tap $CENTER_X $CENTER_Y
-idb ui tap X Y --duration 1.5            # long press
+SH=/Users/adamsulik/Documents/git/simulator-control/.claude/skills/iphone-sim/sim_helper.py
+
+# Take a grid screenshot (default: /tmp/sim_screenshot.png)
+python3 $SH screenshot
+
+# Take to custom path
+python3 $SH screenshot /tmp/my_screenshot.png
 ```
 
-**Key advantage:** idb uses simulator-point coordinates directly — no macOS screen coordinate mapping needed.
+The grid has three visual tiers:
+- **Every 25pt** — faint red lines
+- **Every 50pt** — medium red lines with coordinate labels
+- **Every 100pt** — bold red lines with coordinate labels
 
-### Type Text
+The screenshot is auto-resized to max 1800px height for readability.
 
-```bash
-idb ui text "Hello World"
-```
+Use the Read tool to view the PNG. The grid makes it easy to estimate tap coordinates for elements that don't appear in `idb ui describe-all`.
 
-### Key Presses
-
-```bash
-idb ui key KEYCODE                        # single key press
-idb ui key KEYCODE --duration 1.0         # hold key
-idb ui key-sequence 4 5 6                 # sequential key presses
-```
-
-### Hardware Buttons
-
-```bash
-idb ui button HOME
-idb ui button LOCK
-idb ui button SIRI
-idb ui button SIDE_BUTTON
-idb ui button APPLE_PAY
-idb ui button HOME --duration 2.0         # hold button
-```
-
-### Swipe
-
-```bash
-# Swipe from (x1,y1) to (x2,y2) in simulator points
-idb ui swipe $X1 $Y1 $X2 $Y2
-idb ui swipe $X1 $Y1 $X2 $Y2 --delta 20  # custom step size in points
-```
-
-### Other idb Commands
-
-```bash
-idb focus                                 # bring simulator to foreground
-idb open "myapp://deep-link"              # open URL scheme
-idb set_location 42.3601 -71.0589         # override location (note: space, not comma)
-idb approve com.example.app photos camera location contacts  # grant permissions
-idb add-media cat.jpg dog.mov             # add to camera roll
-idb clear_keychain                        # clear keychain
-idb log                                   # tail device logs
-idb record video output.mp4               # record screen (Ctrl+C to stop)
-```
-
-### Workflow Example (with idb)
-
-```bash
-# 1. See what's on screen
-idb ui describe-all
-
-# 2. Find "Login" button in output — e.g., frame: {x: 137, y: 680, w: 100, h: 44}
-# Center = (187, 702)
-
-# 3. Tap it
-idb ui tap 187 702
-
-# 4. Verify
-idb ui describe-all
-```
-
-### When to Still Use Screenshots
-
-- **Visual verification**: Confirming colors, layout, images, or visual state
-- **Bug reports**: Showing the user what happened
-- **No idb**: Fall back to the screenshot-based workflow below
-
-## Screenshot Navigation (Fallback)
-
-Use this approach when `idb` is not available, or when you need visual verification.
-
-**IMPORTANT:** Always resize screenshots after capturing. Raw simulator screenshots (e.g. 1179x2556) exceed the 2000px image dimension limit and will break the conversation context.
-
+**For screenshots without the grid:**
 ```bash
 xcrun simctl io booted screenshot /tmp/sim_screenshot.png && sips -Z 1800 /tmp/sim_screenshot.png --out /tmp/sim_screenshot.png
 ```
-Use the Read tool to view the PNG. This is how you "see" the simulator.
 
-## Coordinate Mapping
+## Finding UI Elements
 
-To tap on a UI element, you must convert simulator pixel coordinates to macOS screen coordinates.
-
-```bash
-# Get window position and size
-osascript -e 'tell application "System Events" to tell process "Simulator" to get {position, size} of window 1'
-# Returns: win_x, win_y, win_w, win_h
-```
-
-**Formula (no title bar offset needed — verified by testing):**
-```
-mac_x = win_x + (sim_x / device_width) * win_w
-mac_y = win_y + (sim_y / device_height) * win_h
-```
-
-Get device resolution from: `sips -g pixelWidth -g pixelHeight /tmp/sim_screenshot.png`
-Common: iPhone 16 = 1179x2556
-
-**Example calculation in bash:**
-```bash
-BOUNDS=$(osascript -e 'tell application "System Events" to tell process "Simulator" to get {position, size} of window 1')
-WIN_X=$(echo $BOUNDS | cut -d',' -f1 | tr -d ' ')
-WIN_Y=$(echo $BOUNDS | cut -d',' -f2 | tr -d ' ')
-WIN_W=$(echo $BOUNDS | cut -d',' -f3 | tr -d ' ')
-WIN_H=$(echo $BOUNDS | cut -d',' -f4 | tr -d ' ')
-
-# For sim coords (SIM_X, SIM_Y) on a 1179x2556 device:
-MAC_X=$(python3 -c "print(int($WIN_X + ($SIM_X / 1179) * $WIN_W))")
-MAC_Y=$(python3 -c "print(int($WIN_Y + ($SIM_Y / 2556) * $WIN_H))")
-```
-
-## Tapping
+Use `idb ui describe-all` to get element frames in device points:
 
 ```bash
-cliclick c:$MAC_X,$MAC_Y        # single tap
-cliclick dc:$MAC_X,$MAC_Y       # double tap
+# Get all elements with labels
+idb ui describe-all 2>&1 | python3 -c "
+import json, sys
+for el in json.load(sys.stdin):
+    label = el.get('AXLabel', '') or ''
+    t = el.get('type', '')
+    if label:
+        f = el['frame']
+        cx = f['x'] + f['width']/2
+        cy = f['y'] + f['height']/2
+        print(f\"{t}: '{label}' center=({cx:.0f}, {cy:.0f}) frame={f}\")
+"
+
+# Find specific element
+idb ui describe-all 2>&1 | python3 -c "
+import json, sys
+for el in json.load(sys.stdin):
+    label = el.get('AXLabel', '') or ''
+    if 'Login' in label:
+        f = el['frame']
+        print(f\"Found: center=({f['x']+f['width']/2:.0f}, {f['y']+f['height']/2:.0f})\")
+"
 ```
 
-Always focus the simulator first and re-read window bounds before each tap (window may have moved).
+Then tap the center coordinates with `sim_helper.py tap <cx> <cy>`.
 
-## Typing Text
+### CRITICAL: `describe-all` vs `describe-point`
 
-**Method 1 — Direct typing** (requires Hardware Keyboard connected in I/O > Keyboard):
-```bash
-cliclick t:'Hello World'
-```
+**`describe-all` has a known bug ([GitHub #767](https://github.com/facebook/idb/issues/767)): it does NOT return children of Group elements.** This means:
+- **Tab Bar tabs** — invisible (Tab Bar is a Group)
+- **Toolbar buttons** — invisible (toolbar is a Group)
+- **Segmented picker segments** — invisible (picker is a TabGroup)
 
-**Method 2 — Pasteboard** (more reliable, works always):
-```bash
-echo -n "Hello World" | xcrun simctl pbcopy booted
-cliclick kd:cmd t:v ku:cmd
-```
-
-**Special keys:**
-```bash
-cliclick kp:return       # Enter/Return
-cliclick kp:delete       # Backspace
-cliclick kp:tab          # Tab
-cliclick kp:space        # Space
-cliclick kp:esc          # Escape
-cliclick kp:arrow-up     # Arrow keys
-cliclick kp:arrow-down
-```
-
-**IMPORTANT:** `kp:` only works with special key names. For letter keys with modifiers, use `kd:` + `t:` + `ku:`:
-```bash
-cliclick kd:cmd t:a ku:cmd       # Cmd+A (select all)
-cliclick kd:cmd t:v ku:cmd       # Cmd+V (paste)
-cliclick kd:cmd,shift t:h ku:cmd,shift  # Cmd+Shift+H (Home)
-```
-
-## Scrolling / Swiping
+**`describe-point X Y` DOES find these elements.** When `describe-all` can't find something, probe specific coordinates:
 
 ```bash
-# Swipe up (scroll down)
-cliclick dd:$X,$START_Y du:$X,$END_Y
-
-# Swipe down (scroll up)
-cliclick dd:$X,$START_Y du:$X,$END_Y   # reverse Y values
-
-# Swipe with intermediate points for longer scrolls
-cliclick dd:$X,700 dm:$X,500 du:$X,300
+# Probe a specific point — finds elements that describe-all misses
+idb ui describe-point X Y 2>&1 | python3 -c "
+import json, sys
+el = json.load(sys.stdin)
+print(f\"type={el['type']} label='{el.get('AXLabel','')}' role={el.get('role_description','')}\")
+f = el['frame']
+print(f\"center=({f['x']+f['width']/2:.0f}, {f['y']+f['height']/2:.0f})\")
+"
 ```
 
-**WARNING:** Swiping works for in-app scrolling but is too slow for system gestures (unlock, app switcher). Use menu automation for those.
+**Strategy for finding elements:**
+1. **First try `describe-all`** — search by `AXLabel` for regular buttons, text, links
+2. **If not found, use `describe-point`** — probe the expected location (estimate from grid screenshot or nearby elements)
+3. **Use grid screenshot** — take a screenshot with coordinate overlay to visually locate elements and read coordinates directly
+4. **Last resort** — tap by estimated coordinates without verification
+
+### Important: `.accessibilityIdentifier()` does NOT appear in idb
+
+SwiftUI's `.accessibilityIdentifier()` is only used by XCUITest. It does **NOT** map to any field in idb's JSON output. The `AXUniqueId` field in idb maps to SF Symbol names on Images, not to programmatic identifiers.
+
+**What DOES help in idb:**
+- `.accessibilityLabel("Save")` → appears as `AXLabel` — this is how you find elements
+- `Image(systemName: "heart")` → `AXUniqueId: "heart"` — only on SF Symbol Images
+- `AXValue` — shows toggle state (0/1), text field content, etc.
+
+**For simulator testing, `.accessibilityLabel()` is more useful than `.accessibilityIdentifier()`.**
+
+## Workflow Example
+
+```bash
+SH=/Users/adamsulik/Documents/git/simulator-control/.claude/skills/iphone-sim/sim_helper.py
+
+# 1. See what's on screen
+idb ui describe-all 2>&1 | python3 -c "
+import json, sys
+for el in json.load(sys.stdin):
+    label = el.get('AXLabel', '') or ''
+    if label and el.get('type') == 'Button':
+        f = el['frame']
+        print(f\"Button: '{label}' center=({f['x']+f['width']/2:.0f}, {f['y']+f['height']/2:.0f})\")
+"
+# Output: Button: 'Log In' center=(196, 760)
+
+# 2. Tap it
+python3 $SH tap 196 760
+
+# 3. Verify with grid screenshot
+python3 $SH screenshot
+# Then use Read tool to view /tmp/sim_screenshot.png
+```
+
+## Typing into Text Fields
+
+```bash
+SH=/Users/adamsulik/Documents/git/simulator-control/.claude/skills/iphone-sim/sim_helper.py
+
+# 1. Find the text field
+idb ui describe-all 2>&1 | python3 -c "
+import json, sys
+for el in json.load(sys.stdin):
+    if el.get('type') == 'TextField':
+        f = el['frame']
+        print(f\"TextField: val='{el.get('AXValue','')}' center=({f['x']+f['width']/2:.0f}, {f['y']+f['height']/2:.0f})\")
+"
+
+# 2. Tap to focus
+python3 $SH tap 196 445
+
+# 3. Type
+python3 $SH type "admin@schoolsquad.app"
+```
+
+### Multi-Field Entry — IMPORTANT
+
+When typing into multiple fields sequentially, **always dismiss the keyboard between fields**. If the keyboard is open, tapping the next field often fails silently — text goes into the still-focused field.
+
+```bash
+# Type into first field
+python3 $SH tap 196 445
+python3 $SH type "first value"
+
+# DISMISS KEYBOARD before moving to next field — use one of:
+osascript -e 'tell application "System Events" to key code 48'   # Tab to next field
+osascript -e 'tell application "System Events" to key code 36'   # Return key
+python3 $SH tap 196 600                                          # Tap empty area
+sleep 0.5
+
+# Now tap and type into second field
+python3 $SH tap 196 545
+python3 $SH type "second value"
+```
 
 ## App Lifecycle
 
@@ -242,7 +232,7 @@ xcrun simctl launch --console booted <bundle-id>    # with stdout
 xcrun simctl terminate booted <bundle-id>
 xcrun simctl uninstall booted <bundle-id>
 xcrun simctl install booted /path/to/App.app
-xcrun simctl openurl booted "myapp://deep-link"      # opens in default handler
+xcrun simctl openurl booted "myapp://deep-link"
 ```
 
 ## Device Controls
@@ -251,10 +241,6 @@ xcrun simctl openurl booted "myapp://deep-link"      # opens in default handler
 # Appearance
 xcrun simctl ui booted appearance dark
 xcrun simctl ui booted appearance light
-
-# Content size
-xcrun simctl ui booted content_size extra-large
-xcrun simctl ui booted content_size large              # default
 
 # Status bar (clean for screenshots)
 xcrun simctl status_bar booted override --time "9:41" --batteryState charged --batteryLevel 100 --wifiBars 3 --cellularBars 4
@@ -282,8 +268,6 @@ xcrun simctl addmedia booted /path/to/photo.jpg
 # Home button (most reliable way)
 osascript -e 'tell application "System Events" to tell process "Simulator" to click menu item "Home" of menu "Device" of menu bar 1'
 
-# Also unlocks from lock screen ^
-
 # Shake gesture
 osascript -e 'tell application "System Events" to tell process "Simulator" to click menu item "Shake" of menu "Device" of menu bar 1'
 
@@ -295,21 +279,67 @@ osascript -e 'tell application "System Events" to tell process "Simulator" to cl
 
 # Toggle software keyboard
 osascript -e 'tell application "System Events" to tell process "Simulator" to click menu item "Toggle Software Keyboard" of menu "Keyboard" of menu item "Keyboard" of menu "I/O" of menu bar 1'
-
-# List any menu items
-osascript -e 'tell application "System Events" to tell process "Simulator" to get name of every menu item of menu "Device" of menu bar 1'
 ```
+
+## SwiftUI Accessibility Tree Gaps
+
+Some SwiftUI elements do NOT appear in `idb ui describe-all`:
+
+| Element | In Tree? | Workaround |
+|---------|----------|------------|
+| Button, Text, NavigationLink | YES | Use accessibility tree |
+| **`.toolbar { ToolbarItem }` buttons** | **NO** | Use `describe-point` at expected position, or grid screenshot |
+| **TabView tab items** | **NO** (single Group) | Tap by calculated position or grid screenshot |
+| Segmented Picker (`.pickerStyle(.segmented)`) | Partial (TabGroup only, no segments) | Tap left/right half of TabGroup frame |
+
+**When an element is missing from the tree:**
+1. **Take a grid screenshot** (`python3 $SH screenshot`) — read coordinates directly from the overlay
+2. **Use `describe-point`** — probe the expected location to confirm what's there
+3. **Add `.accessibilityLabel()` to the element in SwiftUI code**, rebuild, and relaunch for permanent fix
+4. For **toolbar buttons**: nav bar is typically at `y:56, height:44` (center `y~78`). `.confirmationAction` is far right.
+5. For **tab bar items**: divide the tab bar width evenly by number of tabs.
+
+### Best Practice: Always Add Accessibility Identifiers
+
+When writing new SwiftUI views, **always add `.accessibilityIdentifier()` to elements that won't be in the tree by default**. This includes:
+
+```swift
+// Toolbar items — NOT in tree by default
+.toolbar {
+    ToolbarItem(placement: .confirmationAction) {
+        Button("Save") { ... }
+            .accessibilityIdentifier("save-button")
+    }
+}
+
+// Tab items — NOT individually in tree by default
+TabView {
+    HomeView()
+        .tabItem { Label("Home", systemImage: "house") }
+        .accessibilityIdentifier("home-tab")
+    ProfileView()
+        .tabItem { Label("Profile", systemImage: "person") }
+        .accessibilityIdentifier("profile-tab")
+}
+
+// Segmented pickers — segments not individually exposed
+Picker("Method", selection: $method) { ... }
+    .pickerStyle(.segmented)
+    .accessibilityIdentifier("payment-method-picker")
+```
+
+This makes simulator testing reliable AND improves VoiceOver accessibility.
+
+**Tip:** Run `/iphone-sim-setup` to automatically scan the codebase and add missing identifiers before testing.
 
 ## Common Pitfalls
 
-- **Use idb first**: If `idb` is available, prefer `idb ui describe-all` + `idb ui tap` over screenshots + cliclick. It's faster, cheaper (tokens), and more reliable.
-- **idb `--udid` is global**: Use `idb --udid UDID ui tap X Y`, not `idb ui tap --udid UDID X Y`.
-- **idb coordinates are simulator points**: Unlike cliclick (macOS screen pixels), idb uses the simulator's own coordinate system. No conversion needed.
-- **idb `set_location` uses spaces**: `idb set_location 42.36 -71.06` (not comma-separated like simctl).
-- **idb not finding elements**: Some elements may not have accessibility labels. Fall back to screenshots for unlabeled UI.
+- **Do NOT use `cliclick c:`** for tapping — unreliable. Use `sim_helper.py tap` instead.
+- **Coordinates are device POINTS**, not pixels. Use `idb ui describe-all` for frames.
+- **Typing into wrong field** — keyboard covers other fields. Always dismiss keyboard before tapping next field (Tab key, Return, or tap empty area).
 - **Typing fails silently**: Hardware Keyboard must be connected (I/O > Keyboard). The text field IS focused even without a visible software keyboard.
-- **Clicks miss (cliclick)**: Always re-read window bounds before clicking — they change when the window moves.
 - **Lock screen stuck on black**: Use Device > Home menu to wake. Do NOT try to swipe-unlock.
-- **`kp:h` error**: `kp:` is for special keys only. Use `t:h` with `kd:/ku:` for letter keys.
-- **`openurl` opens Safari**: That's expected for http URLs. Use `xcrun simctl launch` to switch back.
+- **`openurl` opens Safari**: Expected for http URLs. Use `xcrun simctl launch` to switch back.
 - **Multiple simulators**: Use UDID instead of "booted" if more than one sim is running.
+- **Long press fails**: Make sure idb companion is connected (`idb connect <UDID>`). Long press uses `idb ui tap --duration` which doesn't require Simulator to be frontmost.
+- **idb companion not connected**: If `idb ui describe-all` fails, reconnect: `idb connect <UDID>`. If that fails, restart the companion with `idb_companion --udid <UDID> --grpc-domain-sock /tmp/idb/<UDID>_companion.sock`.

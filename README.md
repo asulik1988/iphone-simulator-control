@@ -1,60 +1,72 @@
 # iPhone Simulator Control for Claude Code
 
-A lightweight [Claude Code skill](https://docs.anthropic.com/en/docs/claude-code/skills) that gives Claude full control over the iOS Simulator. No bundled scripts — just a single prompt file that teaches Claude to use native macOS tools (`xcrun simctl`, `idb`, `cliclick`, `osascript`) directly.
+A [Claude Code](https://docs.anthropic.com/en/docs/claude-code) toolkit for full iOS Simulator control — skills, a helper script, and a QA agent that can test your app autonomously.
 
-## How It Works
+## What's Included
 
-This skill is a single `SKILL.md` file. When invoked, it instructs Claude how to:
-
-- **Navigate via accessibility tree** — find buttons, text fields, and other elements by label/type using `idb`, no screenshots needed
-- **Fall back to screenshots** — when `idb` isn't available, uses `cliclick` with coordinate mapping
-- **Tap, type, swipe** — interact with any UI element
-- **Control the simulator** — dark mode, status bar, location, permissions, app lifecycle
-- **Automate menus** — Home button, rotate, shake, keyboard toggles via AppleScript
+| Path | What it does |
+|------|-------------|
+| `.claude/skills/iphone-sim/SKILL.md` | Skill for interacting with the simulator (tap, type, swipe, screenshot, etc.) |
+| `.claude/skills/iphone-sim/sim_helper.py` | Helper script — handles tapping (idb), long press, swiping (CGEvent), typing (AppleScript), and grid screenshots (Pillow) |
+| `.claude/skills/iphone-sim-setup/SKILL.md` | Skill for scanning SwiftUI views and adding accessibility modifiers so elements are findable in the simulator |
+| `.claude/agents/ios-qa-engineer.md` | Autonomous QA agent that tests iOS app features in the simulator, reports bugs with screenshots |
 
 ## Installation
 
-Copy the skill into your Claude Code skills directory:
+### 1. Copy into your Claude Code config
 
 ```bash
-# Global (available in all projects)
+# Skills (global — available in all projects)
 cp -r .claude/skills/iphone-sim ~/.claude/skills/
+cp -r .claude/skills/iphone-sim-setup ~/.claude/skills/
 
-# Or project-level (available only in this project)
-# Just clone/copy this repo — the skill is already in .claude/skills/
+# Agent (global)
+mkdir -p ~/.claude/agents
+cp .claude/agents/ios-qa-engineer.md ~/.claude/agents/
+
+# Or keep project-level — clone this repo and the .claude/ dir is picked up automatically
 ```
 
-### Dependencies
+### 2. Install dependencies
 
-**Recommended** (accessibility-tree navigation):
 ```bash
-brew tap facebook/fb && brew install idb-companion && pip3 install fb-idb
+# Required — simulator interaction
+pip3 install --break-system-packages pyobjc-framework-Quartz Pillow
+brew install idb-companion && pip3 install --break-system-packages fb-idb
+
+# Verify
+xcrun simctl list devices booted    # Need Xcode + a booted simulator
+idb describe --udid booted          # idb companion connected
 ```
 
-**Fallback** (screenshot + coordinate-based navigation):
-```bash
-brew install cliclick
-```
+### 3. One-time simulator setup
 
-You also need Xcode with a simulator device. Verify with:
 ```bash
-xcrun simctl list devices booted
+# Show touch dots in the simulator (persists across launches, restart Simulator after)
+defaults write com.apple.iphonesimulator ShowSingleTouches 1
+
+# Connect idb to the booted simulator
+UDID=$(xcrun simctl list devices booted -j | python3 -c "import json,sys; [print(d['udid']) for r in json.load(sys.stdin)['devices'].values() for d in r if d['state']=='Booted']" 2>/dev/null | head -1)
+idb connect "$UDID"
 ```
 
 ## Usage
 
-Once installed, Claude Code automatically uses the skill when you ask it to interact with the simulator:
+### Skills
+
+Once installed, use the skills via slash commands or let Claude invoke them automatically:
 
 ```
-> /iphone-sim screenshot
-> /iphone-sim tap the Login button
-> /iphone-sim type "hello@example.com" in the email field
-> /iphone-sim swipe up
-> /iphone-sim launch com.apple.mobilesafari
-> /iphone-sim dark mode
+/iphone-sim screenshot              Take a grid screenshot with coordinate overlay
+/iphone-sim tap the Login button    Find and tap an element
+/iphone-sim type "hello@test.com"   Type into the focused field
+/iphone-sim swipe up                Scroll down
+/iphone-sim launch com.myapp.id     Launch an app
+
+/iphone-sim-setup                   Scan SwiftUI views and add missing accessibility modifiers
 ```
 
-Or just ask naturally — Claude will invoke the skill when it's relevant:
+Or ask naturally:
 
 ```
 > Take a screenshot of the simulator
@@ -62,42 +74,57 @@ Or just ask naturally — Claude will invoke the skill when it's relevant:
 > Fill in the login form and submit it
 ```
 
-## Two Navigation Modes
+### QA Agent
 
-### Accessibility Tree (preferred, requires `idb`)
+The `ios-qa-engineer` agent can autonomously test features in the simulator. It takes screenshots at every step, tests edge cases, and reports bugs with severity levels.
 
-Claude reads the UI hierarchy directly — element types, labels, and coordinates — without needing a screenshot. Faster, cheaper (fewer tokens), and more reliable across UI changes.
+Claude will launch the agent automatically when you:
+- Ask it to test a feature
+- Finish implementing something and want verification
+- Fix a bug and want regression testing
 
-```
-describe-all → find element by label → tap by frame center → verify
-```
-
-### Screenshot-Based (fallback, requires `cliclick`)
-
-Claude takes a screenshot, reads it visually, maps simulator coordinates to macOS screen coordinates, and clicks with `cliclick`. Works without `idb` but costs more tokens per interaction.
+Or launch it explicitly:
 
 ```
-screenshot → read image → calculate coordinates → cliclick tap → verify
+> Can you test the login flow?
+> I just finished the profile screen, test it
+> Verify the chat moderation features work
 ```
 
-## What's Included
+## How It Works
 
-| File | Purpose |
-|------|---------|
-| `.claude/skills/iphone-sim/SKILL.md` | The skill — Claude's instructions for simulator control |
+### Interaction Methods
+
+| Action | Method | Tool |
+|--------|--------|------|
+| **Tap** | `idb ui tap` | Accessibility API — works for all elements including toolbar items |
+| **Long press** | `idb ui tap --duration` | Triggers SwiftUI `.contextMenu` reliably |
+| **Type** | AppleScript `keystroke` | Requires Hardware Keyboard connected in Simulator |
+| **Swipe** | CGEvent mouse drag | Reliable for scroll and swipe-back gestures |
+| **Screenshot** | `xcrun simctl io` + Pillow grid overlay | 25pt coordinate grid, auto-resized |
+
+### Finding UI Elements
+
+1. **`idb ui describe-all`** — returns all elements with `AXLabel`, frames in device points
+2. **`idb ui describe-point X Y`** — probes a specific coordinate; finds toolbar/tab bar items that `describe-all` misses (Group children bug, idb #767)
+3. **Grid screenshot** — visual fallback with coordinate overlay for manual coordinate reading
+
+### The `describe-all` Group Children Bug
+
+`idb ui describe-all` does NOT return children of Group elements. This means toolbar buttons, tab bar items, and segmented picker segments are invisible. Use `describe-point` to probe their expected positions, or take a grid screenshot.
+
+The `iphone-sim-setup` skill addresses this by adding `.accessibilityLabel()` and `.accessibilityIdentifier()` modifiers to SwiftUI views, making elements findable for both idb and XCUITest.
 
 ## Capabilities
 
-- Screenshots (with auto-resize to stay within token limits)
-- Tap, double-tap, long press
-- Text input (direct typing, pasteboard, special keys)
-- Scrolling and swiping
-- App launch, terminate, install, uninstall, deep links
-- Dark/light mode, content size, status bar overrides
-- Location simulation
-- Privacy/permission grants
-- Push notification simulation
-- Menu automation (Home, Shake, Rotate, Keyboard toggles)
+- Grid screenshots with coordinate overlay (25pt resolution)
+- Tap, long press, swipe (back, up, down)
+- Text input with keyboard management
+- App lifecycle (launch, terminate, install, uninstall, deep links)
+- Device controls (dark/light mode, status bar, location, permissions)
+- Menu automation (Home, Shake, Rotate, keyboard toggles)
+- SwiftUI accessibility audit and modifier injection
+- Autonomous QA testing with bug reports
 
 ## License
 
